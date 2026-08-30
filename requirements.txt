@@ -1,2 +1,2 @@
 yfinance>=0.2.40
-requests>=2.31
+vaderSentiment>=3.3.2
