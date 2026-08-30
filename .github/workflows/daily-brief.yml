@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  models: read   # required so GITHUB_TOKEN can call GitHub Models
 
 jobs:
   run-brief:
@@ -24,7 +23,6 @@ jobs:
 
       - run: python main.py
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
