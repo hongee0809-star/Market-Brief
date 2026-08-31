@@ -1,5 +1,5 @@
-# One ticker per line. Lines starting with # are ignored.
-AAPL
-MSFT
+# TICKER or TICKER,Display Name — one per line. Lines starting with # are ignored.
 NVDA
-TSLA
+MU
+META
+SKHY,SK Hynix ADR
