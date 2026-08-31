@@ -2,8 +2,9 @@ name: Daily Market Sentiment Brief
 
 on:
   schedule:
-    # 07:00 UTC, Mon-Fri. Adjust for your timezone / market hours.
-    - cron: "0 7 * * 1-5"
+    # 23:00 UTC = 07:00 AM Malaysia time (UTC+8), next calendar day.
+    # Mon-Fri UTC covers Tue-Sat mornings in Malaysia.
+    - cron: "0 23 * * 1-5"
   workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
 
 permissions:
