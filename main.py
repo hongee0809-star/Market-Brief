@@ -19,6 +19,7 @@ from notify import send_email
 
 WATCHLIST_FILE = os.getenv("WATCHLIST_FILE", "watchlist.txt")
 FED_SEARCH_QUERIES = ["Federal Reserve", "Kevin Warsh Federal Reserve"]
+VOLUME_SPIKE_THRESHOLD = 2.0  # today's volume vs. 20-day average, to flag as unusual
 
 
 def load_watchlist(path: str) -> list[dict]:
@@ -46,10 +47,12 @@ def get_currency_symbol(ticker: str) -> str:
 
 
 def fetch_ticker_data(ticker: str, display_name: str) -> dict:
-    """Pull the last few days of price data and recent news headlines."""
+    """Pull recent price/volume history and news headlines."""
     tk = yf.Ticker(ticker)
 
-    hist = tk.history(period="5d")
+    # 2 months gives enough trading days for a 20-day volume average,
+    # while still being a light, fast pull.
+    hist = tk.history(period="2mo")
     if hist.empty or len(hist) < 2:
         last_close = None
         pct_change = None
@@ -57,6 +60,16 @@ def fetch_ticker_data(ticker: str, display_name: str) -> dict:
         last_close = float(hist["Close"].iloc[-1])
         prev_close = float(hist["Close"].iloc[-2])
         pct_change = (last_close - prev_close) / prev_close * 100
+
+    volume_ratio = None
+    if not hist.empty and len(hist) >= 2:
+        last_volume = float(hist["Volume"].iloc[-1])
+        # Average of the 20 trading days *before* today, so today doesn't
+        # water down its own comparison baseline.
+        lookback = hist["Volume"].iloc[-21:-1] if len(hist) >= 21 else hist["Volume"].iloc[:-1]
+        avg_volume = float(lookback.mean()) if len(lookback) > 0 and lookback.mean() > 0 else None
+        if avg_volume:
+            volume_ratio = last_volume / avg_volume
 
     headlines = []
     try:
@@ -87,6 +100,7 @@ def fetch_ticker_data(ticker: str, display_name: str) -> dict:
         "currency": get_currency_symbol(ticker),
         "last_close": last_close,
         "pct_change": pct_change,
+        "volume_ratio": volume_ratio,
         "headlines": headlines[:5],  # cap to keep things readable
     }
 
@@ -139,6 +153,11 @@ def build_notices(results: list[dict], fed_sentiments: list[str]) -> list[str]:
             notices.append(f"{r['display_name']} ({r['ticker']}) moved sharply {direction}: {pct:+.2f}%")
         if r["signal"].startswith("Notable"):
             notices.append(f"{r['display_name']} ({r['ticker']}): {r['signal']}")
+        ratio = r.get("volume_ratio")
+        if ratio is not None and ratio >= VOLUME_SPIKE_THRESHOLD:
+            notices.append(
+                f"{r['display_name']} ({r['ticker']}) volume is {ratio:.1f}x its 20-day average \u2014 unusual activity."
+            )
 
     bearish = fed_sentiments.count("bearish")
     bullish = fed_sentiments.count("bullish")
@@ -160,6 +179,10 @@ def _fmt_pct(value: float | None) -> str:
     return f"{value:+.2f}%" if value is not None else "n/a"
 
 
+def _fmt_volume_ratio(ratio: float | None) -> str:
+    return f"{ratio:.1f}x avg" if ratio is not None else "n/a"
+
+
 def _sentiment_color(label: str) -> str:
     return {"bullish": "#1a7f37", "bearish": "#cf222e"}.get(label, "#57606a")
 
@@ -170,13 +193,20 @@ def _pct_color(value: float | None) -> str:
     return "#1a7f37" if value > 0 else "#cf222e" if value < 0 else "#57606a"
 
 
+def _volume_style(ratio: float | None) -> str:
+    if ratio is not None and ratio >= VOLUME_SPIKE_THRESHOLD:
+        return "color:#9a6700;font-weight:bold;"
+    return "color:#57606a;"
+
+
 def build_report_text(results: list[dict], fed_headlines: list[str], fed_sentiments: list[str], notices: list[str]) -> str:
     """Plain-text version, used for the Actions log."""
     lines = ["Daily Market Sentiment Brief", "=" * 30, ""]
     for r in results:
         lines.append(f"{r['display_name']} ({r['ticker']})  "
                       f"last close: {_fmt_price(r['currency'], r['last_close'])}, "
-                      f"change: {_fmt_pct(r['pct_change'])}")
+                      f"change: {_fmt_pct(r['pct_change'])}, "
+                      f"volume: {_fmt_volume_ratio(r['volume_ratio'])}")
         lines.append(f"  Signal: {r['signal']}")
         for h, s in zip(r["headlines"], r["sentiments"]):
             lines.append(f"    [{s:>8}] {h}")
@@ -212,6 +242,7 @@ def build_report_html(results: list[dict], fed_headlines: list[str], fed_sentime
         f"<td style='{cell}'>{r['display_name']} ({r['ticker']})</td>"
         f"<td style='{cell}text-align:right;'>{_fmt_price(r['currency'], r['last_close'])}</td>"
         f"<td style='{cell}text-align:right;color:{_pct_color(r['pct_change'])};'>{_fmt_pct(r['pct_change'])}</td>"
+        f"<td style='{cell}text-align:right;{_volume_style(r['volume_ratio'])}'>{_fmt_volume_ratio(r['volume_ratio'])}</td>"
         f"<td style='{cell}'>{r['signal']}</td>"
         f"</tr>"
         for r in results
@@ -252,6 +283,7 @@ def build_report_html(results: list[dict], fed_headlines: list[str], fed_sentime
           <th style='{cell}text-align:left;'>Ticker</th>
           <th style='{cell}text-align:right;'>Last Close</th>
           <th style='{cell}text-align:right;'>Change</th>
+          <th style='{cell}text-align:right;'>Volume</th>
           <th style='{cell}text-align:left;'>Signal</th>
         </tr>
         {summary_rows}
