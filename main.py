@@ -10,7 +10,9 @@ to a broker, or give investment advice — it just flags things for you
 to look at yourself.
 """
 
+import math
 import os
+import time
 
 import yfinance as yf
 
@@ -46,29 +48,64 @@ def get_currency_symbol(ticker: str) -> str:
     return "$"
 
 
+def _nan_safe(value):
+    """Yahoo occasionally returns NaN instead of a missing value entirely.
+    NaN is not None, so a plain `is not None` check lets it slip through
+    and get printed as the literal text 'nan'. Normalize it to None here,
+    once, so every formatter downstream can trust 'not None' actually
+    means 'usable number'."""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, float) and math.isnan(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _fetch_clean_history(tk: "yf.Ticker", period: str = "2mo", attempts: int = 2):
+    """Fetch price history, repairing and retrying against Yahoo's
+    occasional bad rows (valid volume but a missing/NaN close is a known
+    upstream glitch, not something we can prevent at the source)."""
+    hist = None
+    for attempt in range(attempts):
+        try:
+            hist = tk.history(period=period, repair=True)
+        except Exception:
+            hist = None
+        if hist is not None and not hist.empty:
+            hist = hist.dropna(subset=["Close", "Volume"])
+            if not hist.empty:
+                return hist
+        if attempt < attempts - 1:
+            time.sleep(2)  # brief pause before retrying a transient glitch
+    return hist
+
+
 def fetch_ticker_data(ticker: str, display_name: str) -> dict:
     """Pull recent price/volume history and news headlines."""
     tk = yf.Ticker(ticker)
 
     # 2 months gives enough trading days for a 20-day volume average,
     # while still being a light, fast pull.
-    hist = tk.history(period="2mo")
-    if hist.empty or len(hist) < 2:
+    hist = _fetch_clean_history(tk, period="2mo")
+    if hist is None or hist.empty or len(hist) < 2:
         last_close = None
         pct_change = None
     else:
-        last_close = float(hist["Close"].iloc[-1])
-        prev_close = float(hist["Close"].iloc[-2])
-        pct_change = (last_close - prev_close) / prev_close * 100
+        last_close = _nan_safe(float(hist["Close"].iloc[-1]))
+        prev_close = _nan_safe(float(hist["Close"].iloc[-2]))
+        pct_change = (last_close - prev_close) / prev_close * 100 if last_close is not None and prev_close else None
 
     volume_ratio = None
-    if not hist.empty and len(hist) >= 2:
-        last_volume = float(hist["Volume"].iloc[-1])
+    if hist is not None and not hist.empty and len(hist) >= 2:
+        last_volume = _nan_safe(float(hist["Volume"].iloc[-1]))
         # Average of the 20 trading days *before* today, so today doesn't
         # water down its own comparison baseline.
         lookback = hist["Volume"].iloc[-21:-1] if len(hist) >= 21 else hist["Volume"].iloc[:-1]
-        avg_volume = float(lookback.mean()) if len(lookback) > 0 and lookback.mean() > 0 else None
-        if avg_volume:
+        avg_volume = _nan_safe(float(lookback.mean())) if len(lookback) > 0 else None
+        if avg_volume and last_volume is not None:
             volume_ratio = last_volume / avg_volume
 
     headlines = []
@@ -172,14 +209,17 @@ def build_notices(results: list[dict], fed_sentiments: list[str]) -> list[str]:
 
 
 def _fmt_price(currency: str, value: float | None) -> str:
+    value = _nan_safe(value)
     return f"{currency}{value:,.2f}" if value is not None else "n/a"
 
 
 def _fmt_pct(value: float | None) -> str:
+    value = _nan_safe(value)
     return f"{value:+.2f}%" if value is not None else "n/a"
 
 
 def _fmt_volume_ratio(ratio: float | None) -> str:
+    ratio = _nan_safe(ratio)
     return f"{ratio:.1f}x avg" if ratio is not None else "n/a"
 
 
@@ -188,12 +228,14 @@ def _sentiment_color(label: str) -> str:
 
 
 def _pct_color(value: float | None) -> str:
+    value = _nan_safe(value)
     if value is None:
         return "#57606a"
     return "#1a7f37" if value > 0 else "#cf222e" if value < 0 else "#57606a"
 
 
 def _volume_style(ratio: float | None) -> str:
+    ratio = _nan_safe(ratio)
     if ratio is not None and ratio >= VOLUME_SPIKE_THRESHOLD:
         return "color:#9a6700;font-weight:bold;"
     return "color:#57606a;"
