@@ -12,6 +12,7 @@ to look at yourself.
 
 import math
 import os
+import sys
 import time
 
 import yfinance as yf
@@ -65,14 +66,17 @@ def _nan_safe(value):
 
 
 def _fetch_clean_history(tk: "yf.Ticker", period: str = "2mo", attempts: int = 2):
-    """Fetch price history, repairing and retrying against Yahoo's
-    occasional bad rows (valid volume but a missing/NaN close is a known
-    upstream glitch, not something we can prevent at the source)."""
+    """Fetch price history, retrying once and dropping any row with an
+    incomplete Close/Volume (a known Yahoo data glitch: a valid volume but
+    a missing/NaN close). On repeated failure, logs *why* to stderr so a
+    future run's Action log explains itself instead of just showing n/a."""
     hist = None
+    last_error = None
     for attempt in range(attempts):
         try:
-            hist = tk.history(period=period, repair=True)
-        except Exception:
+            hist = tk.history(period=period)
+        except Exception as e:
+            last_error = e
             hist = None
         if hist is not None and not hist.empty:
             hist = hist.dropna(subset=["Close", "Volume"])
@@ -80,6 +84,10 @@ def _fetch_clean_history(tk: "yf.Ticker", period: str = "2mo", attempts: int = 2
                 return hist
         if attempt < attempts - 1:
             time.sleep(2)  # brief pause before retrying a transient glitch
+
+    if hist is None or hist.empty:
+        reason = f"exception: {last_error}" if last_error else "no usable rows after cleaning"
+        print(f"  ({tk.ticker}: price history fetch failed \u2014 {reason})", file=sys.stderr)
     return hist
 
 
